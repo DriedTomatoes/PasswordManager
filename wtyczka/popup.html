@@ -13,13 +13,31 @@
     </style>
 </head>
 <body>
-    <h3>Zarządzanie Hasłami</h3>
-    <input type="email" id="email" placeholder="Adres Email">
-    <input type="password" id="password" placeholder="Hasło Główne">
+    <h3>Menedżer Haseł</h3>
     
-    <button id="loginBtn">Zaloguj się</button>
-    <button id="registerBtn">Zarejestruj Nowe Konto</button>
-    
+    <div id="authArea">
+        <input type="email" id="email" placeholder="Adres Email">
+        <input type="password" id="password" placeholder="Hasło Główne">
+        <button id="loginBtn">Zaloguj się</button>
+        <button id="registerBtn">Zarejestruj Nowe Konto</button>
+    </div>
+
+    <div id="vaultArea" style="display: none;">
+        <button id="logoutBtn" style="background-color: #dc3545; width: auto; float: right; padding: 5px;">Wyloguj</button>
+        <div style="clear: both; margin-bottom: 15px;"></div>
+        
+        <h4>Dodaj nowy wpis:</h4>
+        <input type="text" id="newUrl" placeholder="Strona (np. google.com)">
+        <input type="text" id="newLogin" placeholder="Login / Email">
+        <input type="password" id="newPassword" placeholder="Hasło">
+        <button id="savePasswordBtn" style="background-color: #17a2b8;">Zapisz w sejfie</button>
+        
+        <hr>
+        <h4>Twoje Hasła:</h4>
+        <ul id="passwordList" style="list-style-type: none; padding: 0; text-align: left;">
+            </ul>
+    </div>
+
     <p id="status"></p>
 
     <script src="crypto.js"></script>

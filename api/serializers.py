@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import CustomUser
+from .models import CustomUser, PasswordItem
 
 class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
@@ -15,3 +15,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             auth_key_hash=validated_data['auth_key_hash']
         )
         return user
+    
+from .models import PasswordItem
+
+class PasswordItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PasswordItem
+        # Pola, które klient wysyła lub pobiera:
+        fields = ['id', 'url', 'iv', 'ciphertext', 'tag', 'updated_at']
+        read_only_fields = ['id', 'updated_at']

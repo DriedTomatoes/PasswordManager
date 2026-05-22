@@ -1,9 +1,10 @@
-from rest_framework import status, views
+from rest_framework import status, views, generics
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import CustomUser
-from .serializers import RegisterSerializer
+from .models import CustomUser, PasswordItem
+from .serializers import RegisterSerializer, PasswordItemSerializer
+
 
 class RegisterView(views.APIView):
     # Wyjątek: Rejestracja musi być dostępna bez tokenu!
@@ -59,3 +60,17 @@ class CustomLoginView(views.APIView):
             'access': str(refresh.access_token),
             'message': 'Zalogowano pomyślnie!'
         }, status=status.HTTP_200_OK)
+
+
+class PasswordListCreateView(generics.ListCreateAPIView):
+    # Tutaj wymagamy, by użytkownik był zalogowany (musiał podać poprawny token JWT)
+    permission_classes = [IsAuthenticated]
+    serializer_class = PasswordItemSerializer
+
+    # Zwracaj zawsze tylko hasła należące do zalogowanego usera!
+    def get_queryset(self):
+        return PasswordItem.objects.filter(user=self.request.user)
+
+    # Przy tworzeniu nowego wpisu, przypisz go automatycznie do zalogowanego usera
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
