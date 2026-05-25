@@ -74,3 +74,13 @@ class PasswordListCreateView(generics.ListCreateAPIView):
     # Przy tworzeniu nowego wpisu, przypisz go automatycznie do zalogowanego usera
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+
+class PasswordDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """ GET / PUT / PATCH / DELETE pojedynczego wpisu po id.
+        Filtrowanie po userze gwarantuje, ze user nie ruszy cudzych hasel. """
+    permission_classes = [IsAuthenticated]
+    serializer_class = PasswordItemSerializer
+
+    def get_queryset(self):
+        return PasswordItem.objects.filter(user=self.request.user)

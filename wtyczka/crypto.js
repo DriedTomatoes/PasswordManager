@@ -35,21 +35,37 @@ async function deriveAuthKeyHash(password, saltBase64) {
 }
 
 // Wyliczanie klucza szyfrującego (musi być obiektem CryptoKey dla algorytmu AES-GCM)
+// extractable=true bo musimy go zrzucic do chrome.storage.session (przezywa zamkniecie popupa)
 async function deriveEncryptionKey(password, saltBase64) {
     const enc = new TextEncoder();
     const keyMaterial = await window.crypto.subtle.importKey(
         "raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]
     );
     const saltBytes = Uint8Array.from(atob(saltBase64), c => c.charCodeAt(0));
-    
+
     return await window.crypto.subtle.deriveKey(
         {
             name: "PBKDF2", salt: saltBytes, iterations: 100000, hash: "SHA-256"
         },
         keyMaterial,
         { name: "AES-GCM", length: 256 },
-        false, 
+        true,
         ["encrypt", "decrypt"]
+    );
+}
+
+// Eksport klucza AES-GCM do Base64 (do chrome.storage.session)
+async function exportKeyToBase64(cryptoKey) {
+    const raw = await window.crypto.subtle.exportKey("raw", cryptoKey);
+    return btoa(String.fromCharCode(...new Uint8Array(raw)));
+}
+
+// Import klucza AES-GCM z Base64 z powrotem do obiektu CryptoKey
+// extractable=false zeby po restore juz sie nie dalo wyciagnac
+async function importKeyFromBase64(keyBase64) {
+    const bytes = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+    return await window.crypto.subtle.importKey(
+        "raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]
     );
 }
 

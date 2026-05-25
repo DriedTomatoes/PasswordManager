@@ -11,12 +11,51 @@ const vaultArea = document.getElementById('vaultArea');
 
 // ZMIENNA GLOBALNA: Przechowuje w pamięci RAM klucz do szyfrowania i deszyfrowania haseł
 // (Nigdy nie zapisujemy go w localStorage ani nie wysyłamy na serwer!)
-let sessionEncryptionKey = null; 
+let sessionEncryptionKey = null;
+
+// Cache odszyfrowanych wpisów (klucz: id wpisu) - pozwala edycji odczytać aktualne dane
+// bez ponownego deszyfrowania. Czyszczony przy wylogowaniu.
+let vaultEntries = {};
 
 // Funkcja pomocnicza do wyświetlania wiadomości
 function showMessage(text, color) {
     statusText.innerText = text;
     statusText.style.color = color;
+}
+
+// Helper: pobierz token JWT z chrome.storage.session
+async function getToken() {
+    const s = await chrome.storage.session.get('jwtToken');
+    return s.jwtToken;
+}
+
+// Helper: escape HTML, bo dane usera trafiaja do innerHTML
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+// --- INICJALIZACJA PRZY OTWARCIU POPUPA ---
+// Przywróć sesję z chrome.storage.session jeśli istnieje (user byl juz zalogowany)
+async function initialize() {
+    try {
+        const session = await chrome.storage.session.get(['jwtToken', 'keyBytes']);
+        if (session.jwtToken && session.keyBytes) {
+            sessionEncryptionKey = await importKeyFromBase64(session.keyBytes);
+            authArea.style.display = 'none';
+            vaultArea.style.display = 'block';
+            showMessage("", "black");
+            loadVault();
+        }
+    } catch (err) {
+        // Jesli odtworzenie klucza sie nie powiodlo, wyczysc sesje
+        await chrome.storage.session.clear();
+        showMessage("Sesja wygasła, zaloguj się ponownie.", "orange");
+    }
 }
 
 // --- OBSŁUGA REJESTRACJI ---
@@ -68,11 +107,11 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
         if (!saltResponse.ok) throw new Error("Nie znaleziono użytkownika.");
 
         const saltData = await saltResponse.json();
-        
-        // 2. Wyliczenie klucza AUTORYZACYJNEGO (Dla serwera)
+
+        // 2. Wyliczenie klucza AUTORYZACYJNEGO (dla serwera)
         const authKeyHash = await deriveAuthKeyHash(password, saltData.salt);
 
-        // 3. Wyliczenie klucza SZYFRUJĄCEGO AES-GCM (Zostaje w pamięci wtyczki!)
+        // 3. Wyliczenie klucza SZYFRUJĄCEGO AES-GCM (zostaje w pamieci wtyczki)
         sessionEncryptionKey = await deriveEncryptionKey(password, saltData.salt);
 
         // 4. Logowanie po token JWT
@@ -82,40 +121,44 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
             body: JSON.stringify({ email: email, auth_key_hash: authKeyHash })
         });
 
-        if (loginResponse.ok) {
-            const loginData = await loginResponse.json();
-            
-            // Zapisanie JWT do pamięci przeglądarki
-            chrome.storage.local.set({ 'jwtToken': loginData.access }, () => {
-                showMessage("Zalogowano pomyślnie!", "green");
-                
-                // PRZEŁĄCZANIE INTERFEJSU
-                authArea.style.display = 'none';
-                vaultArea.style.display = 'block';
-                
-                loadVault(); 
-            });
-        } else {
-            throw new Error("Nieprawidłowe hasło.");
-        }
+        if (!loginResponse.ok) throw new Error("Nieprawidłowe hasło.");
+
+        const loginData = await loginResponse.json();
+
+        // 5. Zapisanie JWT + zrzutu klucza do chrome.storage.session
+        //    (session: zyje dopoki przegladarka jest otwarta, ginie na zamknieciu)
+        const keyBytes = await exportKeyToBase64(sessionEncryptionKey);
+        await chrome.storage.session.set({
+            jwtToken: loginData.access,
+            refreshToken: loginData.refresh,
+            keyBytes: keyBytes
+        });
+
+        showMessage("Zalogowano pomyślnie!", "green");
+        authArea.style.display = 'none';
+        vaultArea.style.display = 'block';
+        loadVault();
     } catch (error) {
+        sessionEncryptionKey = null;
         showMessage("Błąd: " + error.message, "red");
     }
 });
 
-// --- OBSŁUGA WYLOGOWANIA (Wyczyszczenie pamięci RAM i tokenów) ---
-document.getElementById('logoutBtn').addEventListener('click', () => {
-    chrome.storage.local.remove('jwtToken', () => {
-        sessionEncryptionKey = null; // Bardzo ważne! Czyścimy klucz z pamięci RAM
-        emailInput.value = '';
-        passwordInput.value = '';
-        authArea.style.display = 'block';
-        vaultArea.style.display = 'none';
-        showMessage("Wylogowano.", "black");
-    });
+// --- OBSŁUGA WYLOGOWANIA ---
+// Jawne wylogowanie - czyszczenie session storage + RAM popupa
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+    await chrome.storage.session.clear();
+    sessionEncryptionKey = null;
+    vaultEntries = {};
+    emailInput.value = '';
+    passwordInput.value = '';
+    document.getElementById('passwordList').innerHTML = '';
+    authArea.style.display = 'block';
+    vaultArea.style.display = 'none';
+    showMessage("Wylogowano.", "black");
 });
 
-// --- OBSŁUGA DODAWANIA NOWEGO HASŁA DO SEJFU ---
+// --- DODANIE NOWEGO HASŁA ---
 document.getElementById('savePasswordBtn').addEventListener('click', async () => {
     const url = document.getElementById('newUrl').value;
     const login = document.getElementById('newLogin').value;
@@ -124,53 +167,39 @@ document.getElementById('savePasswordBtn').addEventListener('click', async () =>
     if (!url || !login || !pass) {
         return showMessage("Wypełnij wszystkie pola dla nowego wpisu!", "red");
     }
-
     if (!sessionEncryptionKey) {
-        return showMessage("Błąd krytyczny: Brak klucza szyfrującego w pamięci RAM!", "red");
+        return showMessage("Brak klucza w pamięci. Zaloguj się ponownie.", "red");
     }
 
     showMessage("Szyfrowanie wpisu...", "black");
 
     try {
-        // 1. Złożenie loginu i hasła w jeden obiekt i zamiana na ciąg znaków JSON
         const dataToEncrypt = JSON.stringify({ login: login, password: pass });
-
-        // 2. Szyfrowanie po stronie klienta (Klucz + URL jako dane dodatkowe)
         const encrypted = await encryptData(sessionEncryptionKey, url, dataToEncrypt);
 
-        // UWAGA: WebCrypto API (AES-GCM) dokleja tzw. tag autentykacyjny na sam koniec ciphertextu. 
-        // Skoro na backendzie masz osobne pole 'tag' o stałej długości, wpisujemy w nie cokolwiek 
-        // lub modyfikujemy backend. Na ten moment wyślemy znacznik "wbudowany".
-        
-        // 3. Pobranie tokenu autoryzacyjnego JWT z pamięci przeglądarki
-        const storage = await chrome.storage.local.get('jwtToken');
-        if (!storage.jwtToken) throw new Error("Brak tokenu JWT. Zaloguj się.");
+        const token = await getToken();
+        if (!token) throw new Error("Brak tokenu JWT. Zaloguj się.");
 
-        // 4. Wysłanie ZASZYFROWANYCH danych na serwer
         const response = await fetch(`${API_URL}/passwords/`, {
             method: 'POST',
-            headers: { 
+            headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${storage.jwtToken}` // <--- Ważne! Token JWT
+                'Authorization': `Bearer ${token}`
             },
             body: JSON.stringify({
                 url: url,
                 iv: encrypted.iv,
                 ciphertext: encrypted.ciphertext,
-                tag: 'wbudowany_w_ciphertext' 
+                tag: 'wbudowany_w_ciphertext'
             })
         });
 
         if (response.ok) {
             showMessage("Pomyślnie dodano hasło do sejfu!", "green");
-            // Czyszczenie pól
             document.getElementById('newUrl').value = '';
             document.getElementById('newLogin').value = '';
             document.getElementById('newPassword').value = '';
-
             loadVault();
-            
-            // W tym miejscu w przyszłości przeładujemy listę zapisanych haseł
         } else {
             throw new Error("Błąd zapisu na serwerze.");
         }
@@ -179,66 +208,169 @@ document.getElementById('savePasswordBtn').addEventListener('click', async () =>
     }
 });
 
-// --- OBSŁUGA ŁADOWANIA SEJFU (Pobieranie i deszyfrowanie) ---
-async function loadVault() {
-    const listElement = document.getElementById('passwordList');
-    if (!listElement) return; // Zabezpieczenie, jeśli UI nie jest gotowe
-    
-    listElement.innerHTML = '<li>Pobieranie i deszyfrowanie haseł...</li>';
+// --- USUWANIE WPISU ---
+async function deleteEntry(id) {
+    if (!confirm("Na pewno usunąć ten wpis?")) return;
 
     try {
-        const storage = await chrome.storage.local.get('jwtToken');
-        if (!storage.jwtToken) throw new Error("Brak dostępu. Zaloguj się.");
-
-        // 1. Pobieranie ZASZYFROWANYCH danych z backendu (Django)
-        const response = await fetch(`${API_URL}/passwords/`, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${storage.jwtToken}`
-            }
+        const token = await getToken();
+        const response = await fetch(`${API_URL}/passwords/${id}/`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` }
         });
 
+        if (response.ok || response.status === 204) {
+            showMessage("Wpis usunięty.", "green");
+            delete vaultEntries[id];
+            loadVault();
+        } else {
+            throw new Error("Serwer odmówił usunięcia.");
+        }
+    } catch (error) {
+        showMessage("Błąd usuwania: " + error.message, "red");
+    }
+}
+
+// --- TRYB EDYCJI ---
+// Pokazuje pola edycyjne pod widokiem wpisu
+function showEditForm(li, id) {
+    const entry = vaultEntries[id];
+    if (!entry) return;
+
+    // Nie otwieraj drugiej edycji jesli juz jest
+    if (li.querySelector('.edit-form')) return;
+
+    const form = document.createElement('div');
+    form.className = 'edit-form';
+    form.innerHTML = `
+        <input type="text" class="edit-url" value="${escapeHtml(entry.url)}" placeholder="Strona">
+        <input type="text" class="edit-login" value="${escapeHtml(entry.login)}" placeholder="Login">
+        <input type="text" class="edit-password" value="${escapeHtml(entry.password)}" placeholder="Hasło">
+        <div class="row">
+            <button class="btn-save">Zapisz</button>
+            <button class="btn-cancel">Anuluj</button>
+        </div>
+    `;
+    li.appendChild(form);
+
+    form.querySelector('.btn-save').addEventListener('click', () => {
+        const newUrl = form.querySelector('.edit-url').value.trim();
+        const newLogin = form.querySelector('.edit-login').value;
+        const newPass = form.querySelector('.edit-password').value;
+        if (!newUrl || !newLogin || !newPass) {
+            return showMessage("Wypełnij wszystkie pola edycji!", "red");
+        }
+        saveEdit(id, newUrl, newLogin, newPass);
+    });
+    form.querySelector('.btn-cancel').addEventListener('click', () => form.remove());
+}
+
+// Zapisz zmiany - re-encrypt z (potencjalnie nowym) url i PUT na serwer
+async function saveEdit(id, newUrl, newLogin, newPass) {
+    if (!sessionEncryptionKey) {
+        return showMessage("Brak klucza w pamięci. Zaloguj się ponownie.", "red");
+    }
+    showMessage("Aktualizowanie wpisu...", "black");
+
+    try {
+        const dataToEncrypt = JSON.stringify({ login: newLogin, password: newPass });
+        const encrypted = await encryptData(sessionEncryptionKey, newUrl, dataToEncrypt);
+
+        const token = await getToken();
+        const response = await fetch(`${API_URL}/passwords/${id}/`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                url: newUrl,
+                iv: encrypted.iv,
+                ciphertext: encrypted.ciphertext,
+                tag: 'wbudowany_w_ciphertext'
+            })
+        });
+
+        if (response.ok) {
+            showMessage("Wpis zaktualizowany.", "green");
+            loadVault();
+        } else {
+            throw new Error("Błąd zapisu na serwerze.");
+        }
+    } catch (error) {
+        showMessage("Błąd edycji: " + error.message, "red");
+    }
+}
+
+// --- ŁADOWANIE I DESZYFROWANIE SEJFU ---
+async function loadVault() {
+    const listElement = document.getElementById('passwordList');
+    if (!listElement) return;
+
+    listElement.innerHTML = '<li>Pobieranie i deszyfrowanie haseł...</li>';
+    vaultEntries = {};
+
+    try {
+        const token = await getToken();
+        if (!token) throw new Error("Brak dostępu. Zaloguj się.");
+
+        const response = await fetch(`${API_URL}/passwords/`, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (response.status === 401) {
+            await chrome.storage.session.clear();
+            sessionEncryptionKey = null;
+            authArea.style.display = 'block';
+            vaultArea.style.display = 'none';
+            listElement.innerHTML = '';
+            throw new Error("Sesja wygasła. Zaloguj się ponownie.");
+        }
         if (!response.ok) throw new Error("Błąd pobierania haseł z serwera.");
 
         const passwords = await response.json();
-        listElement.innerHTML = ''; // Czyścimy listę "ładowania"
+        listElement.innerHTML = '';
 
         if (passwords.length === 0) {
             listElement.innerHTML = '<li>Twój sejf jest pusty. Dodaj pierwsze hasło!</li>';
             return;
         }
 
-        // 2. Przechodzimy przez każde hasło i odszyfrowujemy je w pamięci przeglądarki
         for (const item of passwords) {
             try {
-                // To tutaj dzieje się magia Zero-Knowledge:
                 const decryptedString = await decryptData(
-                    sessionEncryptionKey, 
-                    item.url, 
-                    item.iv, 
+                    sessionEncryptionKey,
+                    item.url,
+                    item.iv,
                     item.ciphertext
                 );
-                
-                // Zamieniamy odkodowany ciąg tekstowy z powrotem na obiekt JSON
                 const credentials = JSON.parse(decryptedString);
 
-                // 3. Budujemy element listy (HTML) z odszyfrowanymi danymi
+                // Cache do edycji
+                vaultEntries[item.id] = {
+                    url: item.url,
+                    login: credentials.login,
+                    password: credentials.password
+                };
+
                 const li = document.createElement('li');
-                li.style.marginBottom = "10px";
-                li.style.padding = "10px";
-                li.style.border = "1px solid #ccc";
-                li.style.borderRadius = "5px";
-                li.style.backgroundColor = "#f9f9f9";
-                
+                li.className = 'entry';
+                li.dataset.id = item.id;
                 li.innerHTML = `
-                    <strong>🌍 ${item.url}</strong><br>
-                    👤 Login: <code>${credentials.login}</code><br>
-                    🔑 Hasło: <code>${credentials.password}</code>
+                    <strong>🌍 ${escapeHtml(item.url)}</strong><br>
+                    👤 Login: <code>${escapeHtml(credentials.login)}</code><br>
+                    🔑 Hasło: <code>${escapeHtml(credentials.password)}</code>
+                    <div class="entry-actions">
+                        <button class="btn-edit">Edytuj</button>
+                        <button class="btn-delete">Usuń</button>
+                    </div>
                 `;
+                li.querySelector('.btn-edit').addEventListener('click', () => showEditForm(li, item.id));
+                li.querySelector('.btn-delete').addEventListener('click', () => deleteEntry(item.id));
                 listElement.appendChild(li);
 
             } catch (decErr) {
-                // Jeśli klucz jest zły (np. ktoś podmienił bazę) lub dane uszkodzone
                 console.error("Błąd deszyfrowania dla URL:", item.url, decErr);
                 const li = document.createElement('li');
                 li.style.color = "red";
@@ -248,6 +380,9 @@ async function loadVault() {
         }
 
     } catch (error) {
-        listElement.innerHTML = `<li style="color:red;">Błąd: ${error.message}</li>`;
+        listElement.innerHTML = `<li style="color:red;">Błąd: ${escapeHtml(error.message)}</li>`;
     }
 }
+
+// Start
+initialize();
