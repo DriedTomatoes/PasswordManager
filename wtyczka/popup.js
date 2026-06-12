@@ -377,6 +377,33 @@ async function loadVault() {
                 li.innerText = `❌ Nie udało się odszyfrować wpisu dla: ${item.url}`;
                 listElement.appendChild(li);
             }
+
+            // --- PROSTOWANIE AUTOFILL (Z poziomu Popup do Strony) ---
+        // Gdy baza haseł zostanie w pełni odszyfrowana, szukamy aktywnej karty
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs && tabs[0] && tabs[0].url) {
+                const activeTabUrl = tabs[0].url.toLowerCase();
+
+                // Szukamy w cache wpisu pasującego do aktywnej karty
+                const foundEntryId = Object.keys(vaultEntries).find(id => {
+                    const savedUrlClean = vaultEntries[id].url
+                        .toLowerCase()
+                        .replace(/https?:\/\//, '')
+                        .split('/')[0];
+                    return activeTabUrl.includes(savedUrlClean);
+                });
+
+                // Jeśli znaleźliśmy dopasowanie, strzelamy bezpośrednio do karty komendą "fill"
+                if (foundEntryId) {
+                    const entry = vaultEntries[foundEntryId];
+                    chrome.tabs.sendMessage(tabs[0].id, {
+                        action: "fill",
+                        login: entry.login,
+                        password: entry.password
+                    }).catch(err => console.log("Content script jeszcze nie gotowy lub brak formularza."));
+                }
+            }
+        });
         }
 
     } catch (error) {
@@ -456,6 +483,40 @@ document.addEventListener('click', async function(event) {
             }
         }
     }
+});
+
+// --- OBSŁUGA AUTOMATYCZNEGO UZUPEŁNIANIA (AUTOFILL) ---
+// Ten nasłuchiwacz odbiera zapytania od content.js wstrzykniętego na przeglądanej stronie
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "getCredentials") {
+        const requestedDomain = request.domain; // Pobieramy domenę (np. "github.com")
+
+        if (!sessionEncryptionKey) {
+            sendResponse({ success: false, message: "Menedżer haseł jest zablokowany." });
+            return true;
+        }
+
+        // Przeszukujemy nasz cache (vaultEntries) w poszukiwaniu pasującej domeny
+        const foundEntryId = Object.keys(vaultEntries).find(id => {
+            const savedUrl = vaultEntries[id].url.toLowerCase();
+            const currentUrl = requestedDomain.toLowerCase();
+            // Sprawdzamy, czy domena ze strony pasuje do zapisanego URL (lub na odwrót)
+            return savedUrl.includes(currentUrl) || currentUrl.includes(savedUrl);
+        });
+
+        if (foundEntryId) {
+            const entry = vaultEntries[foundEntryId];
+            // Odsyłamy odszyfrowane dane logowania prosto do content.js
+            sendResponse({ 
+                success: true, 
+                login: entry.login, 
+                password: entry.password 
+            });
+        } else {
+            sendResponse({ success: false, message: "Brak zapisanych haseł dla tej domeny." });
+        }
+    }
+    return true; // Informuje Chrome, że funkcja odpowiada asynchronicznie
 });
 
 // Start
