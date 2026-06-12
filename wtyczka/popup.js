@@ -413,19 +413,19 @@ document.addEventListener('click', function(event) {
 document.addEventListener('click', async function(event) {
     const target = event.target;
 
-    // 1. Obsługa kopiowania LOGINU (klikalny tylko sam email)
+    // 1. Obsługa kopiowania LOGINU (zawsze klikalny)
     if (target.classList.contains('login-text')) {
         const textToCopy = target.getAttribute('data-login');
-        const originalText = target.innerText; // Zapamiętuje tylko sam adres email
+        const originalText = target.innerHTML; // Zapamiętujemy całą linię z ikoną
 
         try {
             await navigator.clipboard.writeText(textToCopy);
-            target.innerText = "Skopiowano! ✅";
+            target.innerHTML = "👤 Skopiowano ";
             target.style.color = "#155724";
             target.style.fontWeight = "bold";
 
             setTimeout(() => {
-                target.innerText = originalText;
+                target.innerHTML = originalText;
                 target.style.color = "#333";
                 target.style.fontWeight = "400";
             }, 1200);
