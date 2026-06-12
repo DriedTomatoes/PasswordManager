@@ -10,11 +10,9 @@ const authArea = document.getElementById('authArea');
 const vaultArea = document.getElementById('vaultArea');
 
 // ZMIENNA GLOBALNA: Przechowuje w pamięci RAM klucz do szyfrowania i deszyfrowania haseł
-// (Nigdy nie zapisujemy go w localStorage ani nie wysyłamy na serwer!)
 let sessionEncryptionKey = null;
 
-// Cache odszyfrowanych wpisów (klucz: id wpisu) - pozwala edycji odczytać aktualne dane
-// bez ponownego deszyfrowania. Czyszczony przy wylogowaniu.
+// Cache odszyfrowanych wpisów (klucz: id wpisu)
 let vaultEntries = {};
 
 // Funkcja pomocnicza do wyświetlania wiadomości
@@ -29,7 +27,7 @@ async function getToken() {
     return s.jwtToken;
 }
 
-// Helper: escape HTML, bo dane usera trafiaja do innerHTML
+// Helper: escape HTML
 function escapeHtml(str) {
     return String(str)
         .replace(/&/g, '&amp;')
@@ -40,7 +38,6 @@ function escapeHtml(str) {
 }
 
 // --- INICJALIZACJA PRZY OTWARCIU POPUPA ---
-// Przywróć sesję z chrome.storage.session jeśli istnieje (user byl juz zalogowany)
 async function initialize() {
     try {
         const session = await chrome.storage.session.get(['jwtToken', 'keyBytes']);
@@ -52,7 +49,6 @@ async function initialize() {
             loadVault();
         }
     } catch (err) {
-        // Jesli odtworzenie klucza sie nie powiodlo, wyczysc sesje
         await chrome.storage.session.clear();
         showMessage("Sesja wygasła, zaloguj się ponownie.", "orange");
     }
@@ -97,7 +93,6 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
     showMessage("Logowanie...", "black");
 
     try {
-        // 1. Prośba o sól
         const saltResponse = await fetch(`${API_URL}/get-salt/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -107,14 +102,9 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
         if (!saltResponse.ok) throw new Error("Nie znaleziono użytkownika.");
 
         const saltData = await saltResponse.json();
-
-        // 2. Wyliczenie klucza AUTORYZACYJNEGO (dla serwera)
         const authKeyHash = await deriveAuthKeyHash(password, saltData.salt);
-
-        // 3. Wyliczenie klucza SZYFRUJĄCEGO AES-GCM (zostaje w pamieci wtyczki)
         sessionEncryptionKey = await deriveEncryptionKey(password, saltData.salt);
 
-        // 4. Logowanie po token JWT
         const loginResponse = await fetch(`${API_URL}/login/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -124,10 +114,8 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
         if (!loginResponse.ok) throw new Error("Nieprawidłowe hasło.");
 
         const loginData = await loginResponse.json();
-
-        // 5. Zapisanie JWT + zrzutu klucza do chrome.storage.session
-        //    (session: zyje dopoki przegladarka jest otwarta, ginie na zamknieciu)
         const keyBytes = await exportKeyToBase64(sessionEncryptionKey);
+        
         await chrome.storage.session.set({
             jwtToken: loginData.access,
             refreshToken: loginData.refresh,
@@ -145,7 +133,6 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
 });
 
 // --- OBSŁUGA WYLOGOWANIA ---
-// Jawne wylogowanie - czyszczenie session storage + RAM popupa
 document.getElementById('logoutBtn').addEventListener('click', async () => {
     await chrome.storage.session.clear();
     sessionEncryptionKey = null;
@@ -176,7 +163,6 @@ document.getElementById('savePasswordBtn').addEventListener('click', async () =>
     try {
         const dataToEncrypt = JSON.stringify({ login: login, password: pass });
         const encrypted = await encryptData(sessionEncryptionKey, url, dataToEncrypt);
-
         const token = await getToken();
         if (!token) throw new Error("Brak tokenu JWT. Zaloguj się.");
 
@@ -232,12 +218,10 @@ async function deleteEntry(id) {
 }
 
 // --- TRYB EDYCJI ---
-// Pokazuje pola edycyjne pod widokiem wpisu
 function showEditForm(li, id) {
     const entry = vaultEntries[id];
     if (!entry) return;
 
-    // Nie otwieraj drugiej edycji jesli juz jest
     if (li.querySelector('.edit-form')) return;
 
     const form = document.createElement('div');
@@ -245,7 +229,7 @@ function showEditForm(li, id) {
     form.innerHTML = `
         <input type="text" class="edit-url" value="${escapeHtml(entry.url)}" placeholder="Strona">
         <input type="text" class="edit-login" value="${escapeHtml(entry.login)}" placeholder="Login">
-        <input type="text" class="edit-password" value="${escapeHtml(entry.password)}" placeholder="Hasło">
+        <input type="password" class="edit-password" value="${escapeHtml(entry.password)}" placeholder="Hasło">
         <div class="row">
             <button class="btn-save">Zapisz</button>
             <button class="btn-cancel">Anuluj</button>
@@ -265,7 +249,7 @@ function showEditForm(li, id) {
     form.querySelector('.btn-cancel').addEventListener('click', () => form.remove());
 }
 
-// Zapisz zmiany - re-encrypt z (potencjalnie nowym) url i PUT na serwer
+// --- ZAPISZ EDYCJĘ ---
 async function saveEdit(id, newUrl, newLogin, newPass) {
     if (!sessionEncryptionKey) {
         return showMessage("Brak klucza w pamięci. Zaloguj się ponownie.", "red");
@@ -275,8 +259,8 @@ async function saveEdit(id, newUrl, newLogin, newPass) {
     try {
         const dataToEncrypt = JSON.stringify({ login: newLogin, password: newPass });
         const encrypted = await encryptData(sessionEncryptionKey, newUrl, dataToEncrypt);
-
         const token = await getToken();
+        
         const response = await fetch(`${API_URL}/passwords/${id}/`, {
             method: 'PUT',
             headers: {
@@ -347,7 +331,6 @@ async function loadVault() {
                 );
                 const credentials = JSON.parse(decryptedString);
 
-                // Cache do edycji
                 vaultEntries[item.id] = {
                     url: item.url,
                     login: credentials.login,
@@ -357,11 +340,28 @@ async function loadVault() {
                 const li = document.createElement('li');
                 li.className = 'entry';
                 li.dataset.id = item.id;
+                
+                // POPRAWKA: Dodano klasę vault-text do opisu loginu i hasła
                 li.innerHTML = `
                     <strong>🌍 ${escapeHtml(item.url)}</strong><br>
-                    👤 Login: <code>${escapeHtml(credentials.login)}</code><br>
-                    🔑 Hasło: <code>${escapeHtml(credentials.password)}</code>
-                    <div class="entry-actions">
+                    
+                    👤 Login: <span class="vault-text login-text" data-login="${escapeHtml(credentials.login)}">${escapeHtml(credentials.login)}</span><br>
+                    
+                    <div style="display: flex; align-items: center; margin-top: 6px; width: 100%; box-sizing: border-box; line-height: 1;">
+                        
+                        <span class="vault-text" style="flex-shrink: 0; width: 70px; white-space: nowrap;">🔑 Hasło:</span>
+                        
+                        <div style="flex-grow: 1; min-width: 0; padding-right: 8px; display: flex; align-items: center;">
+                            <span id="pwd-${item.id}" class="password-text masked" data-password="${escapeHtml(credentials.password)}">••••••••</span>
+                        </div>
+                        
+                        <div style="flex-shrink: 0; width: 24px; text-align: right; display: flex; align-items: center; justify-content: center;">
+                            <button class="toggle-password-btn" data-target="pwd-${item.id}" style="background:none; border:none; cursor:pointer; font-size: 14px; padding: 0; line-height: 1;">👁️</button>
+                        </div>
+                        
+                    </div>
+
+                    <div class="entry-actions" style="margin-top: 10px;">
                         <button class="btn-edit">Edytuj</button>
                         <button class="btn-delete">Usuń</button>
                     </div>
@@ -383,6 +383,80 @@ async function loadVault() {
         listElement.innerHTML = `<li style="color:red;">Błąd: ${escapeHtml(error.message)}</li>`;
     }
 }
+
+// --- LOGIKA KLIKNIĘCIA OKA ---
+document.addEventListener('click', function(event) {
+    if (event.target.classList.contains('toggle-password-btn')) {
+        const btn = event.target;
+        const targetId = btn.getAttribute('data-target');
+        const passwordCode = document.getElementById(targetId);
+        
+        if (!passwordCode) return;
+
+        const realPassword = passwordCode.getAttribute('data-password');
+
+        if (passwordCode.classList.contains('masked')) {
+            // Odkrywamy hasło
+            passwordCode.innerText = realPassword;
+            passwordCode.classList.remove('masked');
+            btn.innerText = '🔒';
+        } else {
+            // Ukrywamy hasło z powrotem
+            passwordCode.innerText = '••••••••';
+            passwordCode.classList.add('masked');
+            btn.innerText = '👁️';
+        }
+    }
+});
+
+// --- UNIWERSALNA LOGIKA KOPIOWANIA DLA LOGINU I HASŁA ---
+document.addEventListener('click', async function(event) {
+    const target = event.target;
+
+    // 1. Obsługa kopiowania LOGINU (klikalny tylko sam email)
+    if (target.classList.contains('login-text')) {
+        const textToCopy = target.getAttribute('data-login');
+        const originalText = target.innerText; // Zapamiętuje tylko sam adres email
+
+        try {
+            await navigator.clipboard.writeText(textToCopy);
+            target.innerText = "Skopiowano! ✅";
+            target.style.color = "#155724";
+            target.style.fontWeight = "bold";
+
+            setTimeout(() => {
+                target.innerText = originalText;
+                target.style.color = "#333";
+                target.style.fontWeight = "400";
+            }, 1200);
+        } catch (err) {
+            showMessage("Błąd kopiowania loginu: " + err.message, "red");
+        }
+    }
+
+    // 2. Obsługa kopiowania HASŁA (klikalne tylko gdy odkryte)
+    if (target.classList.contains('password-text')) {
+        if (!target.classList.contains('masked')) {
+            const textToCopy = target.getAttribute('data-password');
+            const originalText = target.innerText;
+
+            try {
+                await navigator.clipboard.writeText(textToCopy);
+                target.innerText = "Skopiowano";
+                target.style.backgroundColor = "#d4edda";
+                target.style.color = "#155724";
+
+                setTimeout(() => {
+                    target.innerText = originalText;
+                    target.style.backgroundColor = "#eee";
+                    target.style.color = "#333";
+                }, 1200);
+            } catch (err) {
+                showMessage("Błąd kopiowania hasła: " + err.message, "red");
+            }
+        }
+    }
+});
 
 // Start
 initialize();
