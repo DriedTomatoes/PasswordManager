@@ -1,6 +1,6 @@
-// crypto.js - Plik odpowiedzialny za matematykę i szyfrowanie
+// crypto.js - matematyka i szyfrowanie
 
-// Funkcja generująca losową Sól (Salt)
+// Funkcja generująca losową Sól
 function generateSalt() {
     const salt = window.crypto.getRandomValues(new Uint8Array(16));
     return btoa(String.fromCharCode.apply(null, salt));

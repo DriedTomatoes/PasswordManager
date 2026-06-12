@@ -1,43 +1,20 @@
-// popup.js - Główna logika łączenia z serwerem
-
-const API_URL = 'http://127.0.0.1:8000/api';
+// popup.js - Główny kontroler aplikacji
+import * as api from './api.js';
+import * as ui from './ui.js';
+import { triggerAutofillToActiveTab, listenForAutofillRequests } from './autofill-service.js';
 
 // Elementy UI
 const emailInput = document.getElementById('email');
 const passwordInput = document.getElementById('password');
-const statusText = document.getElementById('status');
 const authArea = document.getElementById('authArea');
 const vaultArea = document.getElementById('vaultArea');
+const listElement = document.getElementById('passwordList');
 
-// ZMIENNA GLOBALNA: Przechowuje w pamięci RAM klucz do szyfrowania i deszyfrowania haseł
+// Stan aplikacji (In-memory)
 let sessionEncryptionKey = null;
-
-// Cache odszyfrowanych wpisów (klucz: id wpisu)
 let vaultEntries = {};
 
-// Funkcja pomocnicza do wyświetlania wiadomości
-function showMessage(text, color) {
-    statusText.innerText = text;
-    statusText.style.color = color;
-}
-
-// Helper: pobierz token JWT z chrome.storage.session
-async function getToken() {
-    const s = await chrome.storage.session.get('jwtToken');
-    return s.jwtToken;
-}
-
-// Helper: escape HTML
-function escapeHtml(str) {
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
-// --- INICJALIZACJA PRZY OTWARCIU POPUPA ---
+// Inicjalizacja przy otwarciu popupa
 async function initialize() {
     try {
         const session = await chrome.storage.session.get(['jwtToken', 'keyBytes']);
@@ -45,75 +22,47 @@ async function initialize() {
             sessionEncryptionKey = await importKeyFromBase64(session.keyBytes);
             authArea.style.display = 'none';
             vaultArea.style.display = 'block';
-            showMessage("", "black");
+            ui.showMessage("", "black");
             loadVault();
         }
     } catch (err) {
         await chrome.storage.session.clear();
-        showMessage("Sesja wygasła, zaloguj się ponownie.", "orange");
+        ui.showMessage("Sesja wygasła, zaloguj się ponownie.", "orange");
     }
 }
 
-// --- OBSŁUGA REJESTRACJI ---
+// Obsługa Rejestracji
 document.getElementById('registerBtn').addEventListener('click', async () => {
     const email = emailInput.value;
     const password = passwordInput.value;
+    if (!email || !password) return ui.showMessage("Podaj email i hasło!", "red");
 
-    if (!email || !password) return showMessage("Podaj email i hasło!", "red");
-
-    showMessage("Generowanie kluczy i rejestracja...", "black");
-
+    ui.showMessage("Generowanie kluczy i rejestracja...", "black");
     try {
         const salt = generateSalt();
         const authKeyHash = await deriveAuthKeyHash(password, salt);
+        const response = await api.registerUser(email, salt, authKeyHash);
 
-        const response = await fetch(`${API_URL}/register/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email, salt: salt, auth_key_hash: authKeyHash })
-        });
-
-        if (response.ok) {
-            showMessage("Konto założone! Możesz się zalogować.", "green");
-        } else {
-            showMessage("Błąd rejestracji. Taki email już istnieje.", "red");
-        }
+        if (response.ok) ui.showMessage("Konto założone! Możesz się zalogować.", "green");
+        else ui.showMessage("Błąd rejestracji. Taki email już istnieje.", "red");
     } catch (error) {
-        showMessage("Błąd połączenia: " + error.message, "red");
+        ui.showMessage("Błąd połączenia: " + error.message, "red");
     }
 });
 
-// --- OBSŁUGA LOGOWANIA ---
+// Obsługa Logowania
 document.getElementById('loginBtn').addEventListener('click', async () => {
     const email = emailInput.value;
     const password = passwordInput.value;
+    if (!email || !password) return ui.showMessage("Podaj email i hasło!", "red");
 
-    if (!email || !password) return showMessage("Podaj email i hasło!", "red");
-
-    showMessage("Logowanie...", "black");
-
+    ui.showMessage("Logowanie...", "black");
     try {
-        const saltResponse = await fetch(`${API_URL}/get-salt/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email })
-        });
-
-        if (!saltResponse.ok) throw new Error("Nie znaleziono użytkownika.");
-
-        const saltData = await saltResponse.json();
+        const saltData = await api.fetchSalt(email);
         const authKeyHash = await deriveAuthKeyHash(password, saltData.salt);
         sessionEncryptionKey = await deriveEncryptionKey(password, saltData.salt);
 
-        const loginResponse = await fetch(`${API_URL}/login/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email, auth_key_hash: authKeyHash })
-        });
-
-        if (!loginResponse.ok) throw new Error("Nieprawidłowe hasło.");
-
-        const loginData = await loginResponse.json();
+        const loginData = await api.loginUser(email, authKeyHash);
         const keyBytes = await exportKeyToBase64(sessionEncryptionKey);
         
         await chrome.storage.session.set({
@@ -122,66 +71,46 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
             keyBytes: keyBytes
         });
 
-        showMessage("Zalogowano pomyślnie!", "green");
+        ui.showMessage("Zalogowano pomyślnie!", "green");
         authArea.style.display = 'none';
         vaultArea.style.display = 'block';
         loadVault();
     } catch (error) {
         sessionEncryptionKey = null;
-        showMessage("Błąd: " + error.message, "red");
+        ui.showMessage("Błąd: " + error.message, "red");
     }
 });
 
-// --- OBSŁUGA WYLOGOWANIA ---
+// Obsługa Wylogowania
 document.getElementById('logoutBtn').addEventListener('click', async () => {
     await chrome.storage.session.clear();
     sessionEncryptionKey = null;
     vaultEntries = {};
     emailInput.value = '';
     passwordInput.value = '';
-    document.getElementById('passwordList').innerHTML = '';
+    listElement.innerHTML = '';
     authArea.style.display = 'block';
     vaultArea.style.display = 'none';
-    showMessage("Wylogowano.", "black");
+    ui.showMessage("Wylogowano.", "black");
 });
 
-// --- DODANIE NOWEGO HASŁA ---
+// Dodanie nowego hasła
 document.getElementById('savePasswordBtn').addEventListener('click', async () => {
     const url = document.getElementById('newUrl').value;
     const login = document.getElementById('newLogin').value;
     const pass = document.getElementById('newPassword').value;
 
-    if (!url || !login || !pass) {
-        return showMessage("Wypełnij wszystkie pola dla nowego wpisu!", "red");
-    }
-    if (!sessionEncryptionKey) {
-        return showMessage("Brak klucza w pamięci. Zaloguj się ponownie.", "red");
-    }
+    if (!url || !login || !pass) return ui.showMessage("Wypełnij wszystkie pola dla nowego wpisu!", "red");
+    if (!sessionEncryptionKey) return ui.showMessage("Brak klucza w pamięci. Zaloguj się ponownie.", "red");
 
-    showMessage("Szyfrowanie wpisu...", "black");
-
+    ui.showMessage("Szyfrowanie wpisu...", "black");
     try {
-        const dataToEncrypt = JSON.stringify({ login: login, password: pass });
+        const dataToEncrypt = JSON.stringify({ login, password: pass });
         const encrypted = await encryptData(sessionEncryptionKey, url, dataToEncrypt);
-        const token = await getToken();
-        if (!token) throw new Error("Brak tokenu JWT. Zaloguj się.");
-
-        const response = await fetch(`${API_URL}/passwords/`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-                url: url,
-                iv: encrypted.iv,
-                ciphertext: encrypted.ciphertext,
-                tag: 'wbudowany_w_ciphertext'
-            })
-        });
+        const response = await api.sendEncryptedPassword(url, encrypted);
 
         if (response.ok) {
-            showMessage("Pomyślnie dodano hasło do sejfu!", "green");
+            ui.showMessage("Pomyślnie dodano hasło do sejfu!", "green");
             document.getElementById('newUrl').value = '';
             document.getElementById('newLogin').value = '';
             document.getElementById('newPassword').value = '';
@@ -190,119 +119,18 @@ document.getElementById('savePasswordBtn').addEventListener('click', async () =>
             throw new Error("Błąd zapisu na serwerze.");
         }
     } catch (error) {
-        showMessage("Błąd dodawania hasła: " + error.message, "red");
+        ui.showMessage("Błąd dodawania hasła: " + error.message, "red");
     }
 });
 
-// --- USUWANIE WPISU ---
-async function deleteEntry(id) {
-    if (!confirm("Na pewno usunąć ten wpis?")) return;
-
-    try {
-        const token = await getToken();
-        const response = await fetch(`${API_URL}/passwords/${id}/`, {
-            method: 'DELETE',
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-
-        if (response.ok || response.status === 204) {
-            showMessage("Wpis usunięty.", "green");
-            delete vaultEntries[id];
-            loadVault();
-        } else {
-            throw new Error("Serwer odmówił usunięcia.");
-        }
-    } catch (error) {
-        showMessage("Błąd usuwania: " + error.message, "red");
-    }
-}
-
-// --- TRYB EDYCJI ---
-function showEditForm(li, id) {
-    const entry = vaultEntries[id];
-    if (!entry) return;
-
-    if (li.querySelector('.edit-form')) return;
-
-    const form = document.createElement('div');
-    form.className = 'edit-form';
-    form.innerHTML = `
-        <input type="text" class="edit-url" value="${escapeHtml(entry.url)}" placeholder="Strona">
-        <input type="text" class="edit-login" value="${escapeHtml(entry.login)}" placeholder="Login">
-        <input type="password" class="edit-password" value="${escapeHtml(entry.password)}" placeholder="Hasło">
-        <div class="row">
-            <button class="btn-save">Zapisz</button>
-            <button class="btn-cancel">Anuluj</button>
-        </div>
-    `;
-    li.appendChild(form);
-
-    form.querySelector('.btn-save').addEventListener('click', () => {
-        const newUrl = form.querySelector('.edit-url').value.trim();
-        const newLogin = form.querySelector('.edit-login').value;
-        const newPass = form.querySelector('.edit-password').value;
-        if (!newUrl || !newLogin || !newPass) {
-            return showMessage("Wypełnij wszystkie pola edycji!", "red");
-        }
-        saveEdit(id, newUrl, newLogin, newPass);
-    });
-    form.querySelector('.btn-cancel').addEventListener('click', () => form.remove());
-}
-
-// --- ZAPISZ EDYCJĘ ---
-async function saveEdit(id, newUrl, newLogin, newPass) {
-    if (!sessionEncryptionKey) {
-        return showMessage("Brak klucza w pamięci. Zaloguj się ponownie.", "red");
-    }
-    showMessage("Aktualizowanie wpisu...", "black");
-
-    try {
-        const dataToEncrypt = JSON.stringify({ login: newLogin, password: newPass });
-        const encrypted = await encryptData(sessionEncryptionKey, newUrl, dataToEncrypt);
-        const token = await getToken();
-        
-        const response = await fetch(`${API_URL}/passwords/${id}/`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-                url: newUrl,
-                iv: encrypted.iv,
-                ciphertext: encrypted.ciphertext,
-                tag: 'wbudowany_w_ciphertext'
-            })
-        });
-
-        if (response.ok) {
-            showMessage("Wpis zaktualizowany.", "green");
-            loadVault();
-        } else {
-            throw new Error("Błąd zapisu na serwerze.");
-        }
-    } catch (error) {
-        showMessage("Błąd edycji: " + error.message, "red");
-    }
-}
-
-// --- ŁADOWANIE I DESZYFROWANIE SEJFU ---
+// Ładowanie i deszyfrowanie sejfu
 async function loadVault() {
-    const listElement = document.getElementById('passwordList');
     if (!listElement) return;
-
     listElement.innerHTML = '<li>Pobieranie i deszyfrowanie haseł...</li>';
     vaultEntries = {};
 
     try {
-        const token = await getToken();
-        if (!token) throw new Error("Brak dostępu. Zaloguj się.");
-
-        const response = await fetch(`${API_URL}/passwords/`, {
-            method: 'GET',
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-
+        const response = await api.fetchAllPasswords();
         if (response.status === 401) {
             await chrome.storage.session.clear();
             sessionEncryptionKey = null;
@@ -323,201 +151,137 @@ async function loadVault() {
 
         for (const item of passwords) {
             try {
-                const decryptedString = await decryptData(
-                    sessionEncryptionKey,
-                    item.url,
-                    item.iv,
-                    item.ciphertext
-                );
+                const decryptedString = await decryptData(sessionEncryptionKey, item.url, item.iv, item.ciphertext);
                 const credentials = JSON.parse(decryptedString);
 
-                vaultEntries[item.id] = {
-                    url: item.url,
-                    login: credentials.login,
-                    password: credentials.password
-                };
+                vaultEntries[item.id] = { url: item.url, login: credentials.login, password: credentials.password };
 
-                const li = document.createElement('li');
-                li.className = 'entry';
-                li.dataset.id = item.id;
-                
-                // POPRAWKA: Dodano klasę vault-text do opisu loginu i hasła
-                li.innerHTML = `
-                    <strong>🌍 ${escapeHtml(item.url)}</strong><br>
-                    
-                    👤 Login: <span class="vault-text login-text" data-login="${escapeHtml(credentials.login)}">${escapeHtml(credentials.login)}</span><br>
-                    
-                    <div style="display: flex; align-items: center; margin-top: 6px; width: 100%; box-sizing: border-box; line-height: 1;">
-                        
-                        <span class="vault-text" style="flex-shrink: 0; width: 70px; white-space: nowrap;">🔑 Hasło:</span>
-                        
-                        <div style="flex-grow: 1; min-width: 0; padding-right: 8px; display: flex; align-items: center;">
-                            <span id="pwd-${item.id}" class="password-text masked" data-password="${escapeHtml(credentials.password)}">••••••••</span>
-                        </div>
-                        
-                        <div style="flex-shrink: 0; width: 24px; text-align: right; display: flex; align-items: center; justify-content: center;">
-                            <button class="toggle-password-btn" data-target="pwd-${item.id}" style="background:none; border:none; cursor:pointer; font-size: 14px; padding: 0; line-height: 1;">👁️</button>
-                        </div>
-                        
-                    </div>
-
-                    <div class="entry-actions" style="margin-top: 10px;">
-                        <button class="btn-edit">Edytuj</button>
-                        <button class="btn-delete">Usuń</button>
-                    </div>
-                `;
+                const li = ui.createEntryTemplate(item, credentials);
                 li.querySelector('.btn-edit').addEventListener('click', () => showEditForm(li, item.id));
                 li.querySelector('.btn-delete').addEventListener('click', () => deleteEntry(item.id));
                 listElement.appendChild(li);
-
             } catch (decErr) {
-                console.error("Błąd deszyfrowania dla URL:", item.url, decErr);
                 const li = document.createElement('li');
                 li.style.color = "red";
-                li.innerText = `❌ Nie udało się odszyfrować wpisu dla: ${item.url}`;
+                li.innerText = `Nie udało się odszyfrować wpisu dla: ${item.url}`;
                 listElement.appendChild(li);
             }
-
-            // --- PROSTOWANIE AUTOFILL (Z poziomu Popup do Strony) ---
-        // Gdy baza haseł zostanie w pełni odszyfrowana, szukamy aktywnej karty
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs && tabs[0] && tabs[0].url) {
-                const activeTabUrl = tabs[0].url.toLowerCase();
-
-                // Szukamy w cache wpisu pasującego do aktywnej karty
-                const foundEntryId = Object.keys(vaultEntries).find(id => {
-                    const savedUrlClean = vaultEntries[id].url
-                        .toLowerCase()
-                        .replace(/https?:\/\//, '')
-                        .split('/')[0];
-                    return activeTabUrl.includes(savedUrlClean);
-                });
-
-                // Jeśli znaleźliśmy dopasowanie, strzelamy bezpośrednio do karty komendą "fill"
-                if (foundEntryId) {
-                    const entry = vaultEntries[foundEntryId];
-                    chrome.tabs.sendMessage(tabs[0].id, {
-                        action: "fill",
-                        login: entry.login,
-                        password: entry.password
-                    }).catch(err => console.log("Content script jeszcze nie gotowy lub brak formularza."));
-                }
-            }
-        });
         }
-
+        triggerAutofillToActiveTab(vaultEntries);
     } catch (error) {
-        listElement.innerHTML = `<li style="color:red;">Błąd: ${escapeHtml(error.message)}</li>`;
+        listElement.innerHTML = `<li style="color:red;">Błąd: ${ui.escapeHtml(error.message)}</li>`;
     }
 }
 
-// --- LOGIKA KLIKNIĘCIA OKA ---
-document.addEventListener('click', function(event) {
-    if (event.target.classList.contains('toggle-password-btn')) {
-        const btn = event.target;
-        const targetId = btn.getAttribute('data-target');
-        const passwordCode = document.getElementById(targetId);
-        
-        if (!passwordCode) return;
-
-        const realPassword = passwordCode.getAttribute('data-password');
-
-        if (passwordCode.classList.contains('masked')) {
-            // Odkrywamy hasło
-            passwordCode.innerText = realPassword;
-            passwordCode.classList.remove('masked');
-            btn.innerText = '🔒';
+// Usuwanie wpisu
+async function deleteEntry(id) {
+    if (!confirm("Na pewno usunąć ten wpis?")) return;
+    try {
+        const response = await api.deletePasswordEntry(id);
+        if (response.ok || response.status === 204) {
+            ui.showMessage("Wpis usunięty.", "green");
+            delete vaultEntries[id];
+            loadVault();
         } else {
-            // Ukrywamy hasło z powrotem
-            passwordCode.innerText = '••••••••';
-            passwordCode.classList.add('masked');
-            btn.innerText = '👁️';
+            throw new Error("Serwer odmówił usunięcia.");
         }
+    } catch (error) {
+        ui.showMessage("Błąd usuwania: " + error.message, "red");
     }
-});
+}
 
-// --- UNIWERSALNA LOGIKA KOPIOWANIA DLA LOGINU I HASŁA ---
+// Pokazywanie formularza edycji
+function showEditForm(li, id) {
+    const entry = vaultEntries[id];
+    if (!entry || li.querySelector('.edit-form')) return;
+
+    const form = ui.appendEditForm(li, entry);
+    form.querySelector('.btn-save').addEventListener('click', () => {
+        const newUrl = form.querySelector('.edit-url').value.trim();
+        const newLogin = form.querySelector('.edit-login').value;
+        const newPass = form.querySelector('.edit-password').value;
+        if (!newUrl || !newLogin || !newPass) return ui.showMessage("Wypełnij wszystkie pola edycji!", "red");
+        saveEdit(id, newUrl, newLogin, newPass);
+    });
+    form.querySelector('.btn-cancel').addEventListener('click', () => form.remove());
+}
+
+// Zapisywanie edycji
+async function saveEdit(id, newUrl, newLogin, newPass) {
+    if (!sessionEncryptionKey) return ui.showMessage("Brak klucza w pamięci. Zaloguj się ponownie.", "red");
+    ui.showMessage("Aktualizowanie wpisu...", "black");
+
+    try {
+        const dataToEncrypt = JSON.stringify({ login: newLogin, password: newPass });
+        const encrypted = await encryptData(sessionEncryptionKey, newUrl, dataToEncrypt);
+        const response = await api.updateEncryptedPassword(id, newUrl, encrypted);
+
+        if (response.ok) {
+            ui.showMessage("Wpis zaktualizowany.", "green");
+            loadVault();
+        } else {
+            throw new Error("Błąd zapisu na serwerze.");
+        }
+    } catch (error) {
+        ui.showMessage("Błąd edycji: " + error.message, "red");
+    }
+}
+
+// Globalne nasłuchiwanie zdarzeń (Oko i Kopiowanie)
 document.addEventListener('click', async function(event) {
     const target = event.target;
 
-    // 1. Obsługa kopiowania LOGINU (zawsze klikalny)
+    // Logika oka
+    if (target.classList.contains('toggle-password-btn')) {
+        const targetId = target.getAttribute('data-target');
+        const passwordCode = document.getElementById(targetId);
+        if (!passwordCode) return;
+        const realPassword = passwordCode.getAttribute('data-password');
+
+        if (passwordCode.classList.contains('masked')) {
+            passwordCode.innerText = realPassword;
+            passwordCode.classList.remove('masked');
+            target.innerText = '🔒';
+        } else {
+            passwordCode.innerText = '••••••••';
+            passwordCode.classList.add('masked');
+            target.innerText = '👀';
+        }
+    }
+
+    // Kopiowanie Loginu
     if (target.classList.contains('login-text')) {
         const textToCopy = target.getAttribute('data-login');
-        const originalText = target.innerHTML; // Zapamiętujemy całą linię z ikoną
-
+        const originalText = target.innerHTML;
         try {
             await navigator.clipboard.writeText(textToCopy);
             target.innerHTML = "👤 Skopiowano ";
-            target.style.color = "#155724";
-            target.style.fontWeight = "bold";
-
+            target.style.color = "#155724"; target.style.fontWeight = "bold";
             setTimeout(() => {
                 target.innerHTML = originalText;
-                target.style.color = "#333";
-                target.style.fontWeight = "400";
+                target.style.color = "#333"; target.style.fontWeight = "400";
             }, 1200);
-        } catch (err) {
-            showMessage("Błąd kopiowania loginu: " + err.message, "red");
-        }
+        } catch (err) { ui.showMessage("Błąd kopiowania loginu: " + err.message, "red"); }
     }
 
-    // 2. Obsługa kopiowania HASŁA (klikalne tylko gdy odkryte)
-    if (target.classList.contains('password-text')) {
-        if (!target.classList.contains('masked')) {
-            const textToCopy = target.getAttribute('data-password');
-            const originalText = target.innerText;
-
-            try {
-                await navigator.clipboard.writeText(textToCopy);
-                target.innerText = "Skopiowano";
-                target.style.backgroundColor = "#d4edda";
-                target.style.color = "#155724";
-
-                setTimeout(() => {
-                    target.innerText = originalText;
-                    target.style.backgroundColor = "#eee";
-                    target.style.color = "#333";
-                }, 1200);
-            } catch (err) {
-                showMessage("Błąd kopiowania hasła: " + err.message, "red");
-            }
-        }
+    // Kopiowanie Hasła
+    if (target.classList.contains('password-text') && !target.classList.contains('masked')) {
+        const textToCopy = target.getAttribute('data-password');
+        const originalText = target.innerText;
+        try {
+            await navigator.clipboard.writeText(textToCopy);
+            target.innerText = "Skopiowano";
+            target.style.backgroundColor = "#d4edda"; target.style.color = "#155724";
+            setTimeout(() => {
+                target.innerText = originalText;
+                target.style.backgroundColor = "#eee"; target.style.color = "#333";
+            }, 1200);
+        } catch (err) { ui.showMessage("Błąd kopiowania hasła: " + err.message, "red"); }
     }
 });
 
-// --- OBSŁUGA AUTOMATYCZNEGO UZUPEŁNIANIA (AUTOFILL) ---
-// Ten nasłuchiwacz odbiera zapytania od content.js wstrzykniętego na przeglądanej stronie
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "getCredentials") {
-        const requestedDomain = request.domain; // Pobieramy domenę (np. "github.com")
+// Uruchomienie usług autofill
+listenForAutofillRequests(() => sessionEncryptionKey, () => vaultEntries);
 
-        if (!sessionEncryptionKey) {
-            sendResponse({ success: false, message: "Menedżer haseł jest zablokowany." });
-            return true;
-        }
-
-        // Przeszukujemy nasz cache (vaultEntries) w poszukiwaniu pasującej domeny
-        const foundEntryId = Object.keys(vaultEntries).find(id => {
-            const savedUrl = vaultEntries[id].url.toLowerCase();
-            const currentUrl = requestedDomain.toLowerCase();
-            // Sprawdzamy, czy domena ze strony pasuje do zapisanego URL (lub na odwrót)
-            return savedUrl.includes(currentUrl) || currentUrl.includes(savedUrl);
-        });
-
-        if (foundEntryId) {
-            const entry = vaultEntries[foundEntryId];
-            // Odsyłamy odszyfrowane dane logowania prosto do content.js
-            sendResponse({ 
-                success: true, 
-                login: entry.login, 
-                password: entry.password 
-            });
-        } else {
-            sendResponse({ success: false, message: "Brak zapisanych haseł dla tej domeny." });
-        }
-    }
-    return true; // Informuje Chrome, że funkcja odpowiada asynchronicznie
-});
-
-// Start
+// Start aplikacji
 initialize();

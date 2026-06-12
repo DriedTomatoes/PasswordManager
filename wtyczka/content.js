@@ -1,13 +1,12 @@
-// content.js - Wstrzykiwany na przeglądaną stronę
+// content.js - Wstrzykiwanie danych na strone
 
-// Obsługa zdarzenia "Wepchnięcia" danych z otwartego popupa
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request) => {
     if (request.action === "fill") {
         autofillFields(request.login, request.password);
     }
 });
 
-// Obsługa na wypadek, gdyby popup był już otwarty podczas odświeżania karty
+// Obsluga na wypadek, gdyby popup byl juz otwarty
 (function() {
     const currentDomain = window.location.hostname;
     chrome.runtime.sendMessage({ action: "getCredentials", domain: currentDomain }, (response) => {
@@ -17,7 +16,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
 })();
 
-// Funkcja forsująca wpisywanie danych
+// Funkcja do wypełniania pól logowania i hasła
 function autofillFields(login, password) {
     const passwordField = document.querySelector('input[type="password"]');
     if (!passwordField) return;
@@ -41,4 +40,3 @@ function autofillFields(login, password) {
     passwordField.dispatchEvent(new Event('change', { bubbles: true }));
     passwordField.blur();
 }
-

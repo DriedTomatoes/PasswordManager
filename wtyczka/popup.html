@@ -4,50 +4,62 @@
     <meta charset="UTF-8">
     <title>Menedżer Haseł IoT</title>
     <style>
-        body { width: 360px; padding: 15px; font-family: sans-serif; text-align: center; box-sizing: border-box; }
-        input { width: 100%; margin-bottom: 10px; padding: 8px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
-        button { width: 100%; padding: 10px; margin-bottom: 5px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold;box-sizing: border-box; }
+        body { width: 360px; padding: 15px; font-family: Arial, Helvetica, sans-serif; text-align: center; box-sizing: border-box; }
+        input, button { width: 100%; margin-bottom: 10px; padding: 8px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
+        button { margin-bottom: 5px; cursor: pointer; border: none; font-weight: bold; }
+        
         #loginBtn { background-color: #007bff; color: white; }
         #registerBtn { background-color: #28a745; color: white; }
         #status { margin-top: 15px; font-weight: bold; }
+        
         .entry { margin-bottom: 10px; padding: 12px; border: 1px solid #ccc; border-radius: 5px; background-color: #f9f9f9; text-align: left; }
         .entry-actions { margin-top: 6px; display: flex; gap: 6px; }
         .entry-actions button { flex: 1; padding: 5px; font-size: 12px; font-weight: normal; margin: 0; }
         .btn-edit { background-color: #ffc107; color: #000; }
         .btn-delete { background-color: #dc3545; color: white; }
+        
         .edit-form { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #aaa; }
-        .edit-form input { width: 100%; box-sizing: border-box; margin-bottom: 6px; padding: 6px; }
+        .edit-form input { padding: 6px; margin-bottom: 6px; }
         .edit-form .row { display: flex; gap: 6px; }
         .edit-form .row button { flex: 1; padding: 6px; font-size: 12px; margin: 0; }
         .btn-save { background-color: #28a745; color: white; }
         .btn-cancel { background-color: #6c757d; color: white; }
-        .vault-text { font-family: sans-serif !important; font-size: 14px !important; font-weight: 400 !important; color: #333; }
-        .password-text {
-            font-family: sans-serif !important;
-            font-size: 14px !important;
-            font-weight: 400 !important;
+        
+        .entry, .entry strong, .vault-text, .password-text, .login-text {
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 14px;
+            font-weight: 400;
+            line-height: 1.4;
+            color: #333;
+        }
 
+        .entry strong { font-weight: bold; }
+
+        .password-text {
             background-color: #eee;
             padding: 2px 6px;
             border-radius: 3px;
             display: inline-block;
-            
             max-width: 170px;
             box-sizing: border-box;
-            
             white-space: normal;
             word-wrap: break-word;
             word-break: break-all;
-            
-            line-height: 1.2;
             cursor: default;
         }
-        .password-text.masked { white-space: nowrap !important; word-break: keep-all !important; letter-spacing: 1px; }
-        .password-text:not(.masked) { cursor: pointer; }
-        .password-text:not(.masked):hover { background-color: #e2e2e2; }
-        .login-text { cursor: pointer; transition: color 0.2s ease; display: inline-block; padding: 2px 4px; border-radius: 3px; }
-        .login-text:hover { background-color: #e2e2e2; color: #000; }
 
+        .password-text.masked { 
+            white-space: nowrap; 
+            word-break: keep-all; 
+            letter-spacing: 1px; 
+            font-weight: bold; 
+        }
+        
+        .password-text:not(.masked), .login-text { cursor: pointer; }
+        .password-text:not(.masked):hover, .login-text:hover { background-color: #e2e2e2; }
+        
+        .login-text { transition: color 0.2s ease; display: inline-block; padding: 2px 4px; border-radius: 3px; }
+        .login-text:hover { color: #000; }
     </style>
 </head>
 <body>
@@ -79,6 +91,6 @@
     <p id="status"></p>
 
     <script src="crypto.js"></script>
-    <script src="popup.js"></script>
+    <script src="popup.js" type="module"></script>
 </body>
 </html>
