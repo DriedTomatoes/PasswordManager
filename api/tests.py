@@ -1,16 +1,9 @@
 """
 Testy bezpieczeństwa PasswordManager
-=====================================
+
 Uruchomienie:
     source venv/bin/activate
     python manage.py test api.tests -v 2
-
-Oczekiwane wyniki zależą od aktywnego brancha:
-
-    main          → UserEnumeration: 2 FAIL  | BruteForce: SKIP | Auth/IDOR: PASS
-    salty_fix     → UserEnumeration: PASS    | BruteForce: SKIP | Auth/IDOR: PASS
-    rate_limiting → UserEnumeration: 2 FAIL  | BruteForce: PASS | Auth/IDOR: PASS
-    (po merge obu)→ wszystkie PASS
 """
 import unittest
 from django.test import TestCase
@@ -18,16 +11,12 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from . import models as _m
 from .models import CustomUser, PasswordItem
 
-# Testy brute-force wymagają modelu LoginAttempt z brancha rate_limiting
 HAS_RATE_LIMITING = hasattr(_m, 'LoginAttempt')
 
 
 class UserEnumerationTests(TestCase):
     """
     Weryfikuje czy /api/get-salt/ ujawnia istnienie konta po kodzie odpowiedzi.
-    Podatność: main zwraca 404 dla nieistniejącego emaila → atakujący może
-    sprawdzić tysiące adresów i dowiedzieć się które konta istnieją.
-    Naprawa: branch salty_fix — zawsze HTTP 200, deterministyczna fałszywa sól.
     """
 
     def setUp(self):
@@ -44,35 +33,26 @@ class UserEnumerationTests(TestCase):
         self.assertEqual(r.status_code, 200)
 
     def test_nieistniejacy_uzytkownik_zwraca_200(self):
-        # FAIL na main (zwraca 404) — zdradza że konto nie istnieje
         r = self.client.post('/api/get-salt/',
             {'email': 'nieistniejacy@test.pl'},
             content_type='application/json')
-        self.assertEqual(r.status_code, 200,
-            "PODATNOSC: endpoint zwraca 404 dla nieistniejacych emaili — "
-            "umozliwia enumeracje uzytkownikow. Merge branch salty_fix.")
+        self.assertEqual(r.status_code, 200)
 
     def test_fake_sol_jest_deterministyczna(self):
         # Ten sam nieistniejący email musi zawsze dawać tę samą sól
-        # (gdyby była losowa, atakujący wykryłby różnicę między dwoma wywołaniami)
         r1 = self.client.post('/api/get-salt/',
             {'email': 'ghost@test.pl'},
             content_type='application/json')
         r2 = self.client.post('/api/get-salt/',
             {'email': 'ghost@test.pl'},
             content_type='application/json')
-        self.assertEqual(r1.json().get('salt'), r2.json().get('salt'),
-            "PODATNOSC: falszywa sol jest losowa — atakujacy wykryje "
-            "ze konto nie istnieje porownujac dwie odpowiedzi.")
+        self.assertEqual(r1.json().get('salt'), r2.json().get('salt'))
 
 
-@unittest.skipUnless(HAS_RATE_LIMITING, "SKIP: brak modelu LoginAttempt — merge branch rate_limiting")
+@unittest.skipUnless(HAS_RATE_LIMITING, "Brak modelu LoginAttempt")
 class BruteForceTests(TestCase):
     """
     Weryfikuje ochronę przed atakiem brute-force na /api/login/.
-    Bez rate limitingu atakujący może wysłać nieograniczoną liczbę żądań
-    i metodą słownikową złamać auth_key_hash.
-    Naprawa: branch rate_limiting — blokada IP po 5 nieudanych próbach.
     """
 
     def setUp(self):
@@ -82,10 +62,11 @@ class BruteForceTests(TestCase):
             auth_key_hash='poprawnyHash123'
         )
 
-    def _login(self, auth_key_hash='zlyHash'):
+    def _login(self, auth_key_hash='zlyHash', ip='127.0.0.1'):
         return self.client.post('/api/login/',
             {'email': 'cel@test.pl', 'auth_key_hash': auth_key_hash},
-            content_type='application/json')
+            content_type='application/json',
+            REMOTE_ADDR=ip)
 
     def test_poprawne_logowanie_dziala_przed_limitem(self):
         r = self._login('poprawnyHash123')
@@ -95,11 +76,9 @@ class BruteForceTests(TestCase):
         for _ in range(5):
             self._login('zlyHash')
         r = self._login('zlyHash')
-        self.assertEqual(r.status_code, 429,
-            "PODATNOSC: brak rate limitingu — mozliwy atak brute-force.")
+        self.assertEqual(r.status_code, 429)
 
     def test_poprawne_haslo_blokowane_gdy_ip_zablokowane(self):
-        # Nawet jeśli atakujący zgadnie hasło, IP jest już zablokowane
         for _ in range(5):
             self._login('zlyHash')
         r = self._login('poprawnyHash123')
@@ -135,7 +114,6 @@ class BruteForceTests(TestCase):
 class AuthenticationTests(TestCase):
     """
     Weryfikuje czy endpointy wymagają tokenu JWT.
-    Powinny przechodzić na wszystkich branchach.
     """
 
     def test_lista_hasel_wymaga_tokenu(self):
@@ -159,9 +137,7 @@ class AuthenticationTests(TestCase):
 
 class IDORTests(TestCase):
     """
-    Testuje Insecure Direct Object Reference — czy użytkownik A może
-    odczytać lub usunąć hasła użytkownika B podając jego ID w URL.
-    Powinny przechodzić na wszystkich branchach (zabezpieczenie istnieje od początku).
+    Testuje czy użytkownik A może uzyskać dostęp do haseł użytkownika B.
     """
 
     def setUp(self):
