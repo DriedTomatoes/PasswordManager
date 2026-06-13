@@ -1,13 +1,25 @@
 import hmac
 import hashlib
 import base64
+from datetime import timedelta
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import status, views, generics
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import CustomUser, PasswordItem
+from .models import CustomUser, PasswordItem, LoginAttempt
 from .serializers import RegisterSerializer, PasswordItemSerializer
+
+# Ochrona przed brute-force: max 5 prób z jednego IP w oknie 5 minut
+RATE_LIMIT = 5
+RATE_WINDOW = timedelta(minutes=5)
+
+
+def _check_rate_limit(ip):
+    cutoff = timezone.now() - RATE_WINDOW
+    LoginAttempt.objects.filter(timestamp__lt=cutoff).delete()
+    return LoginAttempt.objects.filter(ip=ip, timestamp__gte=cutoff).count() >= RATE_LIMIT
 
 
 def _fake_salt_for(email: str) -> str:
@@ -58,13 +70,22 @@ class CustomLoginView(views.APIView):
         if not email or not auth_key_hash:
             return Response({"error": "Brakuje emaila lub auth_key_hash."}, status=status.HTTP_400_BAD_REQUEST)
 
+        ip = request.META.get('REMOTE_ADDR')
+        if _check_rate_limit(ip):
+            return Response(
+                {"error": "Zbyt wiele prób logowania. Spróbuj ponownie za 5 minut."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
         try:
             user = CustomUser.objects.get(email=email)
         except CustomUser.DoesNotExist:
+            LoginAttempt.objects.create(ip=ip)
             return Response({"error": "Błędne dane logowania."}, status=status.HTTP_401_UNAUTHORIZED)
 
         # SPRAWDZENIE KRYPTOGRAFICZNE (Kluczowy moment Zero-Knowledge)
         if user.auth_key_hash != auth_key_hash:
+            LoginAttempt.objects.create(ip=ip)
             return Response({"error": "Błędne dane logowania."}, status=status.HTTP_401_UNAUTHORIZED)
 
         # Jeśli hash się zgadza, generujemy tokeny JWT

@@ -43,6 +43,14 @@ class CustomUser(AbstractBaseUser):
     def is_staff(self): return self.is_admin
 
 
+class LoginAttempt(models.Model):
+    ip = models.GenericIPAddressField()
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['ip', 'timestamp'])]
+
+
 class PasswordItem(models.Model):
     """ Model pojedynczego, zaszyfrowanego wpisu (Granularność) """
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='passwords')
