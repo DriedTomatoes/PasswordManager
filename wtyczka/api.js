@@ -30,6 +30,7 @@ export async function loginUser(email, authKeyHash) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, auth_key_hash: authKeyHash })
     });
+    if (response.status === 429) throw new Error("Zbyt wiele prób logowania. Spróbuj za 5 minut.");
     if (!response.ok) throw new Error("Nieprawidłowe hasło.");
     return response.json();
 }

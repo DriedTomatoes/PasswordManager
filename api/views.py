@@ -1,9 +1,39 @@
+import hmac
+import hashlib
+import base64
+from datetime import timedelta
+from django.conf import settings
+from django.utils import timezone
 from rest_framework import status, views, generics
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import CustomUser, PasswordItem
+from .models import CustomUser, PasswordItem, LoginAttempt
 from .serializers import RegisterSerializer, PasswordItemSerializer
+
+# Ochrona przed brute-force: max 5 prób z jednego IP w oknie 5 minut
+RATE_LIMIT = 5
+RATE_WINDOW = timedelta(minutes=5)
+
+
+def _check_rate_limit(ip, email):
+    cutoff = timezone.now() - RATE_WINDOW
+    LoginAttempt.objects.filter(timestamp__lt=cutoff).delete()
+    # Blokuj jeśli za dużo prób z tego IP LUB na ten email (ochrona przed botnetem)
+    by_ip = LoginAttempt.objects.filter(ip=ip, timestamp__gte=cutoff).count()
+    by_email = LoginAttempt.objects.filter(email=email, timestamp__gte=cutoff).count()
+    return by_ip >= RATE_LIMIT or by_email >= RATE_LIMIT
+
+
+def _fake_salt_for(email: str) -> str:
+    # Deterministic fake salt derived from server secret + email.
+    # Same email always produces the same value, so an attacker cannot
+    # distinguish "user exists" from "user doesn't exist" by comparing
+    # two responses for the same address.
+    mac = hmac.new(settings.SECRET_KEY.encode(), email.lower().encode(), hashlib.sha256)
+    # TUTAJ DODALEM ZEBY SOL BYLA TAKIEJ SAMEJ DLUGOSCI JAK PRAWDZIWA SOL
+    truncated_digest = mac.digest()[:16]
+    return base64.b64encode(truncated_digest).decode()
 
 
 class RegisterView(views.APIView):
@@ -23,13 +53,15 @@ class GetSaltView(views.APIView):
     permission_classes = [AllowAny] 
 
     def post(self, request):
-        email = request.data.get('email')
+        email = request.data.get('email', '')
         try:
             user = CustomUser.objects.get(email=email)
-            # Wtyczka potrzebuje soli do wyliczenia kluczy
-            return Response({"salt": user.salt}, status=status.HTTP_200_OK)
+            salt = user.salt
         except CustomUser.DoesNotExist:
-            return Response({"error": "Użytkownik nie istnieje."}, status=status.HTTP_404_NOT_FOUND)
+            # Return a fake but deterministic salt so the response is
+            # indistinguishable from a real one — prevents user enumeration.
+            salt = _fake_salt_for(email)
+        return Response({"salt": salt}, status=status.HTTP_200_OK)
 
 
 class CustomLoginView(views.APIView):
@@ -43,13 +75,22 @@ class CustomLoginView(views.APIView):
         if not email or not auth_key_hash:
             return Response({"error": "Brakuje emaila lub auth_key_hash."}, status=status.HTTP_400_BAD_REQUEST)
 
+        ip = request.META.get('REMOTE_ADDR')
+        if _check_rate_limit(ip, email):
+            return Response(
+                {"error": "Zbyt wiele prób logowania. Spróbuj ponownie za 5 minut."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
         try:
             user = CustomUser.objects.get(email=email)
         except CustomUser.DoesNotExist:
+            LoginAttempt.objects.create(ip=ip, email=email)
             return Response({"error": "Błędne dane logowania."}, status=status.HTTP_401_UNAUTHORIZED)
 
         # SPRAWDZENIE KRYPTOGRAFICZNE (Kluczowy moment Zero-Knowledge)
         if user.auth_key_hash != auth_key_hash:
+            LoginAttempt.objects.create(ip=ip, email=email)
             return Response({"error": "Błędne dane logowania."}, status=status.HTTP_401_UNAUTHORIZED)
 
         # Jeśli hash się zgadza, generujemy tokeny JWT
