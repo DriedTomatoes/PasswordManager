@@ -31,6 +31,7 @@ def _fake_salt_for(email: str) -> str:
     # distinguish "user exists" from "user doesn't exist" by comparing
     # two responses for the same address.
     mac = hmac.new(settings.SECRET_KEY.encode(), email.lower().encode(), hashlib.sha256)
+    # TUTAJ DODALEM ZEBY SOL BYLA TAKIEJ SAMEJ DLUGOSCI JAK PRAWDZIWA SOL
     truncated_digest = mac.digest()[:16]
     return base64.b64encode(truncated_digest).decode()
 
